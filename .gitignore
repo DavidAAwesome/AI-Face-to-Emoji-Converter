@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Environment variables / secrets
+.env
+.env.*
+
+# ---------------------------------------------------------------
+# Testing, linting, type checking
+# ---------------------------------------------------------------
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+tests/_tmp/
+
+# ---------------------------------------------------------------
+# Jupyter
+# ---------------------------------------------------------------
+.ipynb_checkpoints/
+
+# ---------------------------------------------------------------
+# Datasets (FER-2013 etc. - download separately, see README)
+# ---------------------------------------------------------------
+data/
+*.csv
+*.zip
+*.tar.gz
+
+# ---------------------------------------------------------------
+# Model weights, training runs and generated outputs
+# ---------------------------------------------------------------
+checkpoints/*
+!checkpoints/.gitkeep
+assets/models/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+results/
+runs/
+logs/
+*.log
+wandb/
+mlruns/
+lightning_logs/
+
+# Rendered media from app.py
+*.mp4
+*.avi
+*.mov
+
+# ---------------------------------------------------------------
+# Editors / IDEs
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------
+# OS files
+# ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
