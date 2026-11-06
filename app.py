@@ -46,6 +46,10 @@ def parse_args():
     p.add_argument("--width", type=int, default=960, help="requested webcam width")
     p.add_argument("--save", type=Path, help="output video file (video mode) or folder (image mode)")
     p.add_argument("--no-display", action="store_true", help="process without opening a window")
+    p.add_argument("--avatar", action="store_true", help="open a separate animated 3D avatar desktop window")
+    p.add_argument("--avatar-photo", type=Path, help="single image used to initialize the avatar's appearance")
+    p.add_argument("--avatar-config", type=Path, default=RESULTS_DIR / "avatar.json",
+                   help="path for saved avatar appearance JSON (reused if already present)")
     return p.parse_args()
 
 
@@ -74,6 +78,27 @@ def run_images(pipe, emojis, args):
     cv2.destroyAllWindows()
 
 
+def load_avatar_or_none(args, initial_frame):
+    """Create/reuse the appearance JSON and load the optional Panda3D viewer."""
+    from avatar_generator import create_avatar
+    from avatar_viewer import AvatarViewer
+
+    config_path = args.avatar_config
+    if not config_path.is_file():
+        if args.avatar_photo is not None:
+            photo = cv2.imread(str(args.avatar_photo))
+            if photo is None:
+                raise RuntimeError(f"Cannot read avatar photo: {args.avatar_photo}")
+            source = photo
+        else:
+            source = initial_frame
+        create_avatar(source, config_path)
+        print(f"Created appearance config at {config_path}")
+    else:
+        print(f"Reusing avatar appearance config at {config_path}")
+    return AvatarViewer(config_path)
+
+
 def run_stream(pipe, emojis, args):
     if args.video:
         cap = cv2.VideoCapture(str(args.video))
@@ -87,54 +112,84 @@ def run_stream(pipe, emojis, args):
     mode, show_panel, fps = args.mode, True, 0.0
     snap_dir = RESULTS_DIR / "snapshots"
     last = time.perf_counter()
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if not args.video:
-            frame = cv2.flip(frame, 1)  # mirror view feels natural for a webcam
+    viewer = None
+    if args.avatar and args.no_display:
+        raise SystemExit("--avatar requires a desktop display; remove --no-display")
+    if args.avatar and args.video:
+        print("Avatar appearance will be initialized from the first detected video face unless --avatar-photo is supplied")
+    from avatar_animator import get_avatar_expression
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if not args.video:
+                frame = cv2.flip(frame, 1)  # mirror view feels natural for a webcam
 
-        results, timings = pipe.process(frame)
-        frame = render(frame, results, emojis, pipe.classes, mode, show_panel)
-        now = time.perf_counter()
-        fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-6)) if fps else 1.0 / max(now - last, 1e-6)
-        last = now
-        draw_hud(frame, fps, timings, pipe.threshold, mode)
+            results, timings = pipe.process(frame)
+            if args.avatar:
+                if viewer is None and (args.avatar_config.is_file() or results or args.avatar_photo):
+                    try:
+                        viewer = load_avatar_or_none(args, frame)
+                    except (ValueError, RuntimeError) as exc:
+                        print(f"Avatar initialization: {exc}")
+                        # Avoid retrying a missing/invalid photo on every frame.
+                        if args.avatar_photo:
+                            raise
+                if viewer is not None:
+                    if viewer.should_close():
+                        break
+                    # Use the main recognized face's predicted expression.
+                    # Keep neutral when no confident face was classified.
+                    best = max(results, key=lambda r: r.confidence, default=None)
+                    label = (best.label if best is not None and
+                             best.confidence >= pipe.threshold and
+                             best.label != "uncertain" else "neutral")
+                    viewer.update_expression(get_avatar_expression(label))
+                    viewer.update()
+            frame = render(frame, results, emojis, pipe.classes, mode, show_panel)
+            now = time.perf_counter()
+            fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-6)) if fps else 1.0 / max(now - last, 1e-6)
+            last = now
+            draw_hud(frame, fps, timings, pipe.threshold, mode)
 
-        if args.save:
-            if writer is None:
-                args.save.parent.mkdir(parents=True, exist_ok=True)
-                src_fps = cap.get(cv2.CAP_PROP_FPS) or 25
-                writer_size = (frame.shape[1], frame.shape[0])
-                writer = cv2.VideoWriter(str(args.save), cv2.VideoWriter_fourcc(*"mp4v"), src_fps, writer_size)
-            # Toggling the side panel changes the width; keep the output size fixed.
-            writer.write(frame if frame.shape[1::-1] == writer_size else cv2.resize(frame, writer_size))
-        if args.no_display:
-            continue
+            if args.save:
+                if writer is None:
+                    args.save.parent.mkdir(parents=True, exist_ok=True)
+                    src_fps = cap.get(cv2.CAP_PROP_FPS) or 25
+                    writer_size = (frame.shape[1], frame.shape[0])
+                    writer = cv2.VideoWriter(str(args.save), cv2.VideoWriter_fourcc(*"mp4v"), src_fps, writer_size)
+                # Toggling the side panel changes the width; keep the output size fixed.
+                writer.write(frame if frame.shape[1::-1] == writer_size else cv2.resize(frame, writer_size))
+            if args.no_display:
+                continue
 
-        cv2.imshow(WINDOW, frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
-            break
-        if key == ord("m"):
-            mode = OVERLAY_MODES[(OVERLAY_MODES.index(mode) + 1) % len(OVERLAY_MODES)]
-        elif key in (ord("+"), ord("=")):
-            pipe.threshold = min(pipe.threshold + 0.05, 0.95)
-        elif key in (ord("-"), ord("_")):
-            pipe.threshold = max(pipe.threshold - 0.05, 0.0)
-        elif key == ord("p"):
-            show_panel = not show_panel
-        elif key == ord("s"):
-            snap_dir.mkdir(parents=True, exist_ok=True)
-            path = snap_dir / f"snapshot_{time.strftime('%Y%m%d_%H%M%S')}.png"
-            cv2.imwrite(str(path), frame)
-            print(f"Saved {path}")
+            cv2.imshow(WINDOW, frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
+                break
+            if key == ord("m"):
+                mode = OVERLAY_MODES[(OVERLAY_MODES.index(mode) + 1) % len(OVERLAY_MODES)]
+            elif key in (ord("+"), ord("=")):
+                pipe.threshold = min(pipe.threshold + 0.05, 0.95)
+            elif key in (ord("-"), ord("_")):
+                pipe.threshold = max(pipe.threshold - 0.05, 0.0)
+            elif key == ord("p"):
+                show_panel = not show_panel
+            elif key == ord("s"):
+                snap_dir.mkdir(parents=True, exist_ok=True)
+                path = snap_dir / f"snapshot_{time.strftime('%Y%m%d_%H%M%S')}.png"
+                cv2.imwrite(str(path), frame)
+                print(f"Saved {path}")
 
-    cap.release()
-    if writer is not None:
-        writer.release()
-        print(f"Saved {args.save}")
-    cv2.destroyAllWindows()
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
+            print(f"Saved {args.save}")
+        if viewer is not None:
+            viewer.destroy()
+        cv2.destroyAllWindows()
 
 
 def main():
